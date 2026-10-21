@@ -216,7 +216,7 @@ Pre-training teaches general English; fine-tuning teaches one job. Here the job 
 - **A small head on `[CLS]`.** The vector BERT makes for the `[CLS]` token goes through dropout, a 256 → 256 layer with tanh, and a 256 → 2 layer. The whole model trains, not just the head ([`minibert/finetune.py`](minibert/finetune.py)).
 - **A fair comparison.** Google's checkpoints include a "pooler" trained by the next-sentence task, which ours skipped. So both models get the same new head, made from the same seed, the same data order and the same recipe: 4 epochs, batches of 32, AdamW with 10% warm-up then linear decay. That's the recipe Google used for its small BERTs.
 - **No picking the best epoch.** The score reported is the last epoch's, so the validation set never chooses a result. Each model tries three learning rates (3e-4, 1e-4, 5e-5) with three seeds each, and is reported at its best rate as the mean and spread of the three seeds.
-- **Checked against Google's own number.** Google reports 85.9% on SST-2's test set for its BERT-Mini, so Google's BERT-Mini fine-tuned with this code should land close to that on the validation set. A CPU run checking this is under way; its result will go here.
+- **Checked against Google's own number.** Google's BERT-Mini, fine-tuned with this code, gets **85.6%** of SST-2's validation sentences right (learning rate 1e-4, seed 1, last epoch; 47 minutes on 2 CPU cores). Google reports 85.9% on the test set, with the best of its own settings.
 
 ```bash
 minibert finetune --out runs/sentiment-google                    # Google's BERT-Mini; downloads SST-2
