@@ -1,13 +1,13 @@
 # Mini BERT
 
 [![tests](https://github.com/omdkpatel810-ops/mini-bert/actions/workflows/tests.yml/badge.svg)](https://github.com/omdkpatel810-ops/mini-bert/actions/workflows/tests.yml)
-![coverage 99.8%](https://img.shields.io/badge/coverage-99.8%25-brightgreen)
+![coverage 99.5%](https://img.shields.io/badge/coverage-99.5%25-brightgreen)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 [![MIT license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 BERT, the language model behind Google Search's 2019 upgrade, built from scratch to learn how it works inside. Each part gets checked against Google's own code and weights.
 
-> **Status: milestone 3 of 5 is under way.** The tokenizer and the Transformer model are complete, and Google's pre-trained BERT runs on them. The training code is done and tested; a small BERT is now training from scratch on a free Colab GPU ([roadmap](#roadmap)).
+> **Status: milestones 3 and 4 of 5 are under way.** The tokenizer and the Transformer model are complete, and Google's pre-trained BERT runs on them. The pre-training and fine-tuning code is done and tested; a small BERT is training from scratch on a free Colab GPU, and the results will follow ([roadmap](#roadmap)).
 
 ```text
 $ minibert fill "Paris is the [MASK] of France."
@@ -22,7 +22,7 @@ $ minibert fill "Paris is the [MASK] of France."
 - **Exactly Google's tokenizer.** It matches Google's original code on all 511,834 tokens of WikiText-103's test and validation text, and on over 10,000 random Unicode strings in every test run. It is 2.5x faster than Google's Python.
 - **Found three ways Hugging Face's Rust tokenizer differs from Google's code,** including a typo in one of its Chinese-character ranges ([details](#where-hugging-face-differs-from-google)).
 - **Trained our own 30,522-token vocabulary** on 105 million words of Wikipedia in 2 min 40 s. It splits held-out text into 1.081 tokens per word, the same as Hugging Face's trainer and fewer than Google's vocabulary (1.094).
-- 154 tests with 99.8% line coverage (all but two GPU-only lines), many property-based (Hypothesis), on Python 3.10 and 3.13.
+- 185 tests with 99.5% line coverage (all but a few GPU-only lines), many property-based (Hypothesis), on Python 3.10 and 3.13.
 
 ## Quick start
 
@@ -129,7 +129,7 @@ flowchart TB
     end
     layer --> hidden["One 768-number vector per token"]
     hidden --> head["Masked-word head<br/>scores for all 30,522 tokens"]
-    hidden --> pool["[CLS] vector → pooler<br/>for classifying whole texts (milestone 4)"]
+    hidden --> cls["[CLS] vector → classifier head<br/>for sorting whole sentences (Part 4)"]
 ```
 
 All of it is in [`minibert/model.py`](minibert/model.py), about 200 lines, using only PyTorch's basic layers (`Linear`, `Embedding`, `LayerNorm`):
@@ -209,21 +209,40 @@ minibert evaluate runs/mini/model --valid data/tokens/valid.bin
 
 On a free Colab GPU, [`notebooks/pretrain_colab.ipynb`](notebooks/pretrain_colab.ipynb) does all of this, keeping everything in Google Drive.
 
+## Part 4: fine-tuning for sentiment
+
+Pre-training teaches general English; fine-tuning teaches one job. Here the job is [SST-2](https://huggingface.co/datasets/nyu-mll/glue): is a sentence from a movie review positive or negative? There are 67,349 training sentences and 872 for validation.
+
+- **A small head on `[CLS]`.** The vector BERT makes for the `[CLS]` token goes through dropout, a 256 → 256 layer with tanh, and a 256 → 2 layer. The whole model trains, not just the head ([`minibert/finetune.py`](minibert/finetune.py)).
+- **A fair comparison.** Google's checkpoints include a "pooler" trained by the next-sentence task, which ours skipped. So both models get the same new head, made from the same seed, the same data order and the same recipe: 4 epochs, batches of 32, AdamW with 10% warm-up then linear decay. That's the recipe Google used for its small BERTs.
+- **No picking the best epoch.** The score reported is the last epoch's, so the validation set never chooses a result. Each model tries three learning rates (3e-4, 1e-4, 5e-5) with three seeds each, and is reported at its best rate as the mean and spread of the three seeds.
+- **Checked against Google's own number.** Google reports 85.9% on SST-2's test set for its BERT-Mini, so Google's BERT-Mini fine-tuned with this code should land close to that on the validation set. A CPU run checking this is under way; its result will go here.
+
+```bash
+minibert finetune --out runs/sentiment-google                    # Google's BERT-Mini; downloads SST-2
+minibert finetune --model runs/mini/model --out runs/sentiment-ours
+minibert classify --model runs/sentiment-ours "not bad at all." "a mess from start to finish."
+```
+
+Any task that sorts sentences into classes works the same way: give `--train` and `--valid` as `.tsv` files with `sentence` and `label` columns, and the class names with `--labels`.
+
+On a free Colab GPU, [`notebooks/finetune_colab.ipynb`](notebooks/finetune_colab.ipynb) runs all 18 fine-tuning runs for both models, resuming after a disconnect, and draws the comparison. Results will be added here when it has run.
+
 ## Tests
 
 ```bash
-python -m pytest --cov     # 154 tests, 99.8% coverage; fails under 95%
+python -m pytest --cov     # 185 tests, 99.5% coverage; fails under 95%
 ruff check . && ruff format --check .
 ```
 
-GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including the BERT-Tiny download. Training is tested on CPU with a tiny model: it must go from chance to most hidden words right on a learnable pattern, and an interrupted run must end exactly where an uninterrupted one does.
+GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including the BERT-Tiny download. Training is tested on CPU with a tiny model: it must go from chance to most hidden words right on a learnable pattern, and an interrupted run must end exactly where an uninterrupted one does. Fine-tuning must learn to tell made-up good reviews from bad ones perfectly, give the same model twice from the same seed, and give the same answer for a sentence whether or not it's padded.
 
 ## Roadmap
 
 - [x] **1. Tokenizer:** Google's WordPiece tokenizer, exactly, and a vocabulary trainer
 - [x] **2. Model:** the Transformer encoder in PyTorch; Google's BERT weights load and match Hugging Face
-- [ ] **3. Pre-training:** teach a small BERT English by guessing hidden words
-- [ ] **4. Fine-tuning:** sentiment analysis, compared with Google's BERT of the same size
+- [ ] **3. Pre-training:** teach a small BERT English by guessing hidden words (code done; training on Colab)
+- [ ] **4. Fine-tuning:** sentiment analysis, compared with Google's BERT of the same size (code done; waiting for the pre-trained model)
 - [ ] **5. Ship it**
 
 ## Credits

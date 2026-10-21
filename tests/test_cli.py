@@ -298,3 +298,76 @@ def test_prepare_data_needs_a_file(tmp_path):
 
     assert code == 1
     assert err.strip() == f"error: No such file: {tmp_path / 'missing.txt'}"
+
+
+# finetune and classify ------------------------------------------------------------
+
+
+@pytest.fixture
+def reviews(tmp_path):
+    rows = ["sentence\tlabel"] + [f"the cat sat {'.' if i % 2 else 'mat'}\t{i % 2}" for i in range(40)]
+    train = tmp_path / "train.tsv"
+    train.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    valid = tmp_path / "valid.tsv"
+    valid.write_text("sentence\tlabel\nthe cat sat .\t1\nthe mat\t0\n", encoding="utf-8")
+    return train, valid
+
+
+def test_finetune_then_classify(tmp_path, tiny_model, reviews):
+    train, valid = reviews
+    code, out, err = run(
+        "finetune", "--model", str(tiny_model), "--train", str(train), "--valid", str(valid),
+        "--out", str(tmp_path / "clf"), "--epochs", "2", "--batch-size", "8", "--labels", "no, yes", "--device", "cpu",
+    )  # fmt: skip
+
+    assert (code, err) == (0, "")
+    lines = out.splitlines()
+    assert lines[0] == f"Fine-tuning {tiny_model} on 40 examples, checking on 2."
+    assert lines[1].startswith("epoch 1/2  training loss ")
+    assert lines[-1].startswith("Validation: ") and lines[-1].endswith(f"Saved to {tmp_path / 'clf'}.")
+
+    code, out, err = run("classify", "the cat sat .", "the mat", "--model", str(tmp_path / "clf"))
+
+    assert (code, err) == (0, "")
+    labels = [line.split(" (")[0] for line in out.splitlines()]
+    assert len(labels) == 2 and set(labels) <= {"no", "yes"}
+    assert out.splitlines()[0].endswith("%)  the cat sat .")
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--train", "train.tsv"], "error: Give both --train and --valid, or neither to use SST-2."),
+        (["--train", "nowhere.tsv", "--valid", "nowhere.tsv"], "error: No such file: nowhere.tsv"),
+    ],
+)
+def test_finetune_errors(tmp_path, tiny_model, reviews, monkeypatch, args, message):
+    monkeypatch.chdir(tmp_path)
+    code, _, err = run("finetune", "--model", str(tiny_model), "--out", "clf", *args)
+
+    assert code == 1
+    assert err.strip() == message
+
+
+def test_finetune_with_a_broken_model(tmp_path, tiny_model, reviews):
+    from safetensors.torch import load_file, save_file
+
+    weights = tiny_model / "model.safetensors"
+    state = load_file(weights)
+    del state["bias"]
+    save_file(state, weights)
+    train, valid = reviews
+
+    code, _, err = run(
+        "finetune", "--model", str(tiny_model), "--train", str(train), "--valid", str(valid), "--out", "x"
+    )
+
+    assert code == 1
+    assert err.strip() == f"error: {tiny_model} is missing weights: bias"
+
+
+def test_classify_needs_a_classifier(tmp_path, tiny_model):
+    assert run("classify", "hi", "--model", str(tmp_path / "missing"))[2].strip().startswith("error: No such folder")
+    code, _, err = run("classify", "hi", "--model", str(tiny_model))
+    assert code == 1
+    assert "isn't a fine-tuned classifier" in err

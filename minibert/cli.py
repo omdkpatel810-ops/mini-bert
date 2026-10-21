@@ -1,4 +1,4 @@
-"""Command line: minibert tokenize | train-tokenizer | fill | prepare-data | pretrain | evaluate."""
+"""Command line: minibert tokenize | train-tokenizer | fill | prepare-data | pretrain | evaluate | finetune | classify."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from typing import TextIO
 from minibert import __version__
 from minibert.tokenizer import Tokenizer
 from minibert.tokenizer.train import available_cpus, count_words, train_vocab
+
+SST2_LABELS = ("negative", "positive")  # the same as minibert.finetune.SST2_LABELS, without importing PyTorch
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -74,6 +76,28 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("model", help="a folder saved by this project, or a Hugging Face BERT name")
     evaluate.add_argument("--valid", type=Path, required=True, help="held-out tokens from prepare-data")
     evaluate.add_argument("--sequences", type=int, default=512, help="how many 128-token windows to use")
+
+    finetune = commands.add_parser("finetune", help="teach a pre-trained BERT to sort sentences into classes")
+    finetune.add_argument(
+        "--model",
+        default="google/bert_uncased_L-4_H-256_A-4",
+        help="a folder saved by pretrain, or a Hugging Face BERT name (default: Google's BERT-Mini)",
+    )
+    finetune.add_argument("--out", type=Path, required=True, help="where to save the fine-tuned classifier")
+    finetune.add_argument("--train", type=Path, help="training .tsv or .parquet (default: download SST-2)")
+    finetune.add_argument("--valid", type=Path, help="validation .tsv or .parquet (default: download SST-2)")
+    finetune.add_argument(
+        "--labels", default=",".join(SST2_LABELS), help="class names, in label order (default: negative,positive)"
+    )
+    finetune.add_argument("--epochs", type=int, default=4)
+    finetune.add_argument("--batch-size", type=int, default=32)
+    finetune.add_argument("--learning-rate", type=float, default=1e-4)
+    finetune.add_argument("--seed", type=int, default=0)
+    finetune.add_argument("--device", help="cuda, cpu or mps (default: cuda if there's a GPU)")
+
+    classify = commands.add_parser("classify", help="sort sentences with a classifier saved by finetune")
+    classify.add_argument("texts", nargs="+", metavar="TEXT")
+    classify.add_argument("--model", type=Path, required=True, help="a folder saved by finetune")
     return parser
 
 
@@ -92,6 +116,10 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: Text
             return _pretrain(args, out)
         if args.command == "evaluate":
             return _evaluate(args, out)
+        if args.command == "finetune":
+            return _finetune(args, out)
+        if args.command == "classify":
+            return _classify(args, out)
         return _train(args, out)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=err)
@@ -258,4 +286,50 @@ def _evaluate(args: argparse.Namespace, out: TextIO) -> int:
         f"(loss {scores['loss']:.3f}, perplexity {scores['perplexity']:,.1f}).",
         file=out,
     )
+    return 0
+
+
+def _finetune(args: argparse.Namespace, out: TextIO) -> int:
+    from minibert.checkpoint import CheckpointError, load
+    from minibert.finetune import FinetuneSettings, SentenceClassifier, finetune, read_examples, save_classifier, sst2
+
+    labels = [label.strip() for label in args.labels.split(",") if label.strip()]
+    if (args.train is None) != (args.valid is None):
+        raise ValueError("Give both --train and --valid, or neither to use SST-2.")
+    for path in (args.train, args.valid):
+        if path is not None and not path.is_file():
+            raise ValueError(f"No such file: {path}")
+    settings = FinetuneSettings(
+        epochs=args.epochs, batch_size=args.batch_size, learning_rate=args.learning_rate, seed=args.seed
+    )
+    try:
+        pretrained, tokenizer = load(args.model)
+    except CheckpointError as exc:
+        raise ValueError(str(exc)) from exc
+    train = read_examples(args.train) if args.train else sst2("train")
+    valid = read_examples(args.valid) if args.valid else sst2("validation")
+    model = SentenceClassifier.from_pretrained(pretrained, labels, seed=args.seed)
+    print(f"Fine-tuning {args.model} on {len(train):,} examples, checking on {len(valid):,}.", file=out, flush=True)
+    result = finetune(
+        model,
+        tokenizer,
+        train,
+        valid,
+        settings,
+        device=args.device,
+        report=lambda line: print(line, file=out, flush=True),
+    )
+    save_classifier(model.cpu(), tokenizer, args.out)
+    print(f"Validation: {result['accuracy']:.1%} right. Saved to {args.out}.", file=out)
+    return 0
+
+
+def _classify(args: argparse.Namespace, out: TextIO) -> int:
+    from minibert.finetune import classify, load_classifier
+
+    if not args.model.is_dir():
+        raise ValueError(f"No such folder: {args.model}")
+    model, tokenizer = load_classifier(args.model)
+    for text, prediction in zip(args.texts, classify(model, tokenizer, args.texts), strict=True):
+        print(f"{prediction.label} ({prediction.probability:.0%})  {text}", file=out)
     return 0
