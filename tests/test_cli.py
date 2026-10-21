@@ -109,3 +109,69 @@ def test_training_on_an_empty_file(tmp_path):
 
     assert code == 1
     assert err.strip() == "error: The files have no words to learn from."
+
+
+# fill ------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def tiny_model(tmp_path):
+    import torch
+
+    from minibert.checkpoint import save
+    from minibert.model import BertConfig, MaskedLanguageModel
+    from minibert.tokenizer import SPECIAL_TOKENS, Tokenizer
+
+    vocab = [*SPECIAL_TOKENS, "the", "cat", "sat", "mat", "."]
+    torch.manual_seed(0)
+    model = MaskedLanguageModel(
+        BertConfig(vocab_size=len(vocab), hidden_size=16, layers=1, heads=2, intermediate_size=32, max_positions=16)
+    )
+    return save(model, Tokenizer(vocab), tmp_path / "tiny")
+
+
+def test_fill_one_blank(tiny_model):
+    code, out, err = run("fill", "the [MASK] sat .", "--model", str(tiny_model), "--top", "3")
+
+    assert (code, err) == (0, "")
+    lines = out.splitlines()
+    assert len(lines) == 3
+    assert all(line.startswith("  ") and line.endswith("%") for line in lines)
+
+
+def test_fill_several_blanks(tiny_model):
+    _, out, _ = run("fill", "the [MASK] sat on the [MASK] .", "--model", str(tiny_model), "--top", "2")
+
+    lines = out.splitlines()
+    assert lines[0] == "[MASK] 1:"
+    assert lines[3] == "[MASK] 2:"
+    assert len(lines) == 6
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--top", "0"], "error: --top must be at least 1."),
+        ([], "error: Put [MASK] where the missing word goes"),
+    ],
+)
+def test_fill_errors(tiny_model, args, message):
+    text = "the cat sat" if not args else "the [MASK] sat"
+    code, _, err = run("fill", text, "--model", str(tiny_model), *args)
+
+    assert code == 1
+    assert err.startswith(message)
+
+
+def test_fill_with_a_broken_model(tiny_model):
+    from safetensors.torch import load_file, save_file
+
+    weights = tiny_model / "model.safetensors"
+    state = load_file(weights)
+    del state["bias"]
+    save_file(state, weights)
+
+    code, _, err = run("fill", "the [MASK] sat", "--model", str(tiny_model))
+
+    assert code == 1
+    assert err.strip() == f"error: {tiny_model} is missing weights: bias"

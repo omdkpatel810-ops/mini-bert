@@ -18,6 +18,7 @@ frequent pair.
 from __future__ import annotations
 
 import heapq
+import multiprocessing
 import os
 import time
 from collections import Counter, defaultdict
@@ -50,7 +51,10 @@ def count_words(
     if workers <= 1:
         return _count_batch(list(lines), lowercase, split_cjk)
     counts: Counter[str] = Counter()
-    with ProcessPoolExecutor(max_workers=workers) as pool:
+    # Fresh worker processes rather than forked copies: forking a process that has started
+    # threads (PyTorch does) can deadlock, and Python 3.12+ warns about it.
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=workers, mp_context=context) as pool:
         for partial in pool.map(_count_batch, _batches(lines, 20_000), _repeat(lowercase), _repeat(split_cjk)):
             counts.update(partial)
     return counts

@@ -1,4 +1,4 @@
-"""Command line: minibert tokenize | train-tokenizer."""
+"""Command line: minibert tokenize | train-tokenizer | fill."""
 
 from __future__ import annotations
 
@@ -34,6 +34,15 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--alphabet", type=int, default=1_000, help="most characters to keep (default: 1000)")
     train.add_argument("--cased", action="store_true", help="keep capitals and accents")
     train.add_argument("--workers", type=int, default=0, help="processes for counting words (default: one per core)")
+
+    fill = commands.add_parser("fill", help="guess the word hidden by [MASK]")
+    fill.add_argument("text", help='text with [MASK] where a word is missing, like "Paris is the [MASK] of France."')
+    fill.add_argument(
+        "--model",
+        default="bert-base-uncased",
+        help="a Hugging Face BERT name, or a folder saved by this project (default: bert-base-uncased)",
+    )
+    fill.add_argument("--top", type=int, default=5, help="how many guesses to show (default: 5)")
     return parser
 
 
@@ -44,6 +53,8 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: Text
     try:
         if args.command == "tokenize":
             return _tokenize(args, out)
+        if args.command == "fill":
+            return _fill(args, out)
         return _train(args, out)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=err)
@@ -100,3 +111,24 @@ def _lines(paths: Sequence[Path]) -> Iterator[str]:
     for path in paths:
         with path.open(encoding="utf-8", errors="replace") as handle:
             yield from handle
+
+
+def _fill(args: argparse.Namespace, out: TextIO) -> int:
+    # PyTorch takes a moment to import, so only the commands that need it load it.
+    from minibert.checkpoint import CheckpointError, load
+    from minibert.predict import fill_mask
+
+    if args.top < 1:
+        raise ValueError("--top must be at least 1.")
+    try:
+        model, tokenizer = load(args.model)
+    except CheckpointError as exc:
+        raise ValueError(str(exc)) from exc
+    guesses = fill_mask(model, tokenizer, args.text, top=args.top)
+    for number, options in enumerate(guesses, start=1):
+        if len(guesses) > 1:
+            print(f"[MASK] {number}:", file=out)
+        width = max(len(guess.token) for guess in options)
+        for guess in options:
+            print(f"  {guess.token:<{width}}  {guess.probability:6.1%}", file=out)
+    return 0
