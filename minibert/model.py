@@ -50,6 +50,17 @@ class BertConfig:
 
 
 @dataclass
+class MaskedWordResult:
+    loss: Tensor  # cross-entropy over the hidden words
+    predictions: Tensor  # the model's best guess for each hidden word
+    targets: Tensor  # the words that were really there
+
+    @property
+    def correct(self) -> int:
+        return int((self.predictions == self.targets).sum())
+
+
+@dataclass
 class BertOutput:
     hidden: Tensor  # (batch, tokens, hidden_size): one vector per token
     pooled: Tensor  # (batch, hidden_size): the [CLS] vector after the pooler, for classifying the whole input
@@ -91,18 +102,25 @@ class SelfAttention(nn.Module):
         self.attention_dropout = nn.Dropout(config.attention_dropout)
         self.dropout = nn.Dropout(config.dropout)
         self.norm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.fused = False
 
-    def forward(self, x: Tensor, mask_bias: Tensor) -> tuple[Tensor, Tensor]:
+    def forward(self, x: Tensor, mask_bias: Tensor, keep: Tensor, need_weights: bool) -> tuple[Tensor, Tensor | None]:
         batch, tokens, _ = x.shape
 
         def split_heads(t: Tensor) -> Tensor:  # (batch, tokens, hidden) → (batch, heads, tokens, head_size)
             return t.view(batch, tokens, self.heads, self.head_size).transpose(1, 2)
 
         q, k, v = split_heads(self.query(x)), split_heads(self.key(x)), split_heads(self.value(x))
-        # How well each token's query matches every token's key, scaled so the softmax doesn't saturate.
-        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_size) + mask_bias
-        weights = scores.softmax(dim=-1)
-        context = self.attention_dropout(weights) @ v
+        weights = None
+        if self.fused and not need_weights:
+            # PyTorch's fused kernel does the same sums in one step: faster, and lighter on GPU memory.
+            dropout = self.attention_dropout.p if self.training else 0.0
+            context = F.scaled_dot_product_attention(q, k, v, attn_mask=keep, dropout_p=dropout)
+        else:
+            # How well each token's query matches every token's key, scaled so the softmax doesn't saturate.
+            scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_size) + mask_bias
+            weights = scores.softmax(dim=-1)
+            context = self.attention_dropout(weights) @ v
         context = context.transpose(1, 2).reshape(batch, tokens, self.heads * self.head_size)
         return self.norm(x + self.dropout(self.out(context))), weights
 
@@ -127,8 +145,8 @@ class EncoderLayer(nn.Module):
         self.attention = SelfAttention(config)
         self.feed_forward = FeedForward(config)
 
-    def forward(self, x: Tensor, mask_bias: Tensor) -> tuple[Tensor, Tensor]:
-        x, weights = self.attention(x, mask_bias)
+    def forward(self, x: Tensor, mask_bias: Tensor, keep: Tensor, need_weights: bool) -> tuple[Tensor, Tensor | None]:
+        x, weights = self.attention(x, mask_bias, keep, need_weights)
         return self.feed_forward(x), weights
 
 
@@ -160,14 +178,20 @@ class Bert(nn.Module):
 
         x = self.embeddings(ids, segment_ids)
         # Padding gets a huge negative score, so after the softmax no token attends to it.
-        mask_bias = (1.0 - attention_mask[:, None, None, :].to(x.dtype)) * torch.finfo(x.dtype).min
+        keep = attention_mask[:, None, None, :].bool()
+        mask_bias = (~keep).to(x.dtype) * torch.finfo(x.dtype).min
         attentions = []
         for layer in self.layers:
-            x, weights = layer(x, mask_bias)
+            x, weights = layer(x, mask_bias, keep, return_attentions)
             if return_attentions:
                 attentions.append(weights)
         pooled = torch.tanh(self.pooler(x[:, 0]))
         return BertOutput(hidden=x, pooled=pooled, attentions=attentions if return_attentions else None)
+
+    def use_fused_attention(self, enabled: bool = True) -> None:
+        """Switch attention to PyTorch's fused kernel (same results, faster), except when weights are asked for."""
+        for layer in self.layers:
+            layer.attention.fused = enabled
 
 
 class MaskedLanguageModel(nn.Module):
@@ -196,9 +220,38 @@ class MaskedLanguageModel(nn.Module):
     ) -> tuple[Tensor, BertOutput]:
         """Scores for every vocabulary word at every position: (batch, tokens, vocab_size)."""
         output = self.bert(ids, segment_ids, attention_mask, return_attentions)
-        h = self.norm(F.gelu(self.transform(output.hidden)))
-        logits = h @ self.bert.embeddings.words.weight.T + self.bias
-        return logits, output
+        return self.predict(output.hidden), output
+
+    def predict(self, hidden: Tensor) -> Tensor:
+        """Token vectors to scores for every word in the vocabulary."""
+        h = self.norm(F.gelu(self.transform(hidden)))
+        return h @ self.bert.embeddings.words.weight.T + self.bias
+
+    def masked_word_loss(
+        self,
+        ids: Tensor,
+        labels: Tensor,
+        segment_ids: Tensor | None = None,
+        attention_mask: Tensor | None = None,
+        ignore: int = -100,
+    ) -> MaskedWordResult:
+        """The pre-training loss: how badly the model guesses the hidden words.
+
+        `labels` holds the real word where one was hidden and `ignore` elsewhere. Scores
+        are only worked out at the hidden positions: scoring all 30,522 words at every
+        position would be about 7x the work for the same loss.
+        """
+        hidden = self.bert(ids, segment_ids, attention_mask).hidden
+        chosen = labels != ignore
+        targets = labels[chosen]
+        if not targets.numel():
+            zero = hidden.sum() * 0.0  # nothing hidden: zero loss that still connects to the model
+            return MaskedWordResult(zero, targets, targets)
+        logits = self.predict(hidden[chosen]).float()
+        return MaskedWordResult(F.cross_entropy(logits, targets), logits.argmax(dim=-1), targets)
+
+    def use_fused_attention(self, enabled: bool = True) -> None:
+        self.bert.use_fused_attention(enabled)
 
 
 def _init_weights(module: nn.Module) -> None:

@@ -175,3 +175,126 @@ def test_fill_with_a_broken_model(tiny_model):
 
     assert code == 1
     assert err.strip() == f"error: {tiny_model} is missing weights: bias"
+
+
+# prepare-data, pretrain, evaluate -------------------------------------------------
+
+
+@pytest.fixture
+def small_vocab(tmp_path):
+    from minibert.tokenizer import SPECIAL_TOKENS
+
+    path = tmp_path / "vocab.txt"
+    path.write_text("\n".join([*SPECIAL_TOKENS, "=", "the", "cat", "sat", "dog", "ran", "."]) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def prepared(tmp_path, small_vocab):
+    text = tmp_path / "wiki.txt"
+    text.write_text(
+        "= The Cat =\n" + "the cat sat . the dog ran .\n" * 200 + "= The Dog =\nthe dog ran .\n", encoding="utf-8"
+    )
+    code, out, err = run(
+        "prepare-data",
+        str(text),
+        "--out",
+        str(tmp_path / "train.bin"),
+        "--wikitext",
+        "--vocab",
+        str(small_vocab),
+        "--workers",
+        "1",
+    )
+    assert (code, err) == (0, "")
+    return tmp_path / "train.bin", out
+
+
+def test_prepare_data(prepared):
+    path, out = prepared
+
+    assert out.startswith(f"Wrote 1,613 tokens from 203 lines (2 documents) to {path} in ")
+    assert path.exists() and path.with_suffix(".json").exists()
+
+
+def test_prepare_data_with_the_default_vocabulary_and_workers(tmp_path):
+    text = tmp_path / "plain.txt"
+    text.write_text("Hello world.\nSecond line.\n", encoding="utf-8")
+
+    code, out, _ = run("prepare-data", str(text), "--out", str(tmp_path / "plain.bin"))
+
+    assert code == 0
+    assert out.startswith("Wrote 8 tokens from 2 lines (2 documents)")
+
+
+def test_pretrain_then_evaluate(tmp_path, prepared, small_vocab):
+    path, _ = prepared
+    run_dir = tmp_path / "run"
+    args = ["--train", str(path), "--valid", str(path), "--run", str(run_dir), "--vocab", str(small_vocab)]
+    shape = ["--layers", "1", "--hidden", "16", "--heads", "2", "--max-positions", "16", "--sequence-length", "16"]
+    schedule = ["--steps", "20", "--batch-size", "4", "--warmup", "2", "--eval-every", "10", "--save-every", "10"]
+
+    code, out, err = run("pretrain", *args, *shape, *schedule, "--device", "cpu")
+
+    assert (code, err) == (0, "")
+    assert "held-out text: loss" in out
+    assert f"Finished 20 steps. Model saved to {run_dir / 'model'}." in out
+    assert out.strip().splitlines()[-1].startswith("Held-out text: guesses ")
+
+    code, out, _ = run("evaluate", str(run_dir / "model"), "--valid", str(path), "--sequences", "8")
+    assert code == 0
+    assert out.startswith(f"{run_dir / 'model'}: guesses ")
+    assert "hidden words right (loss " in out
+
+
+def test_pretrain_sequence_must_fit_the_positions(tmp_path, prepared, small_vocab):
+    path, _ = prepared
+
+    code, _, err = run(
+        "pretrain",
+        "--train",
+        str(path),
+        "--valid",
+        str(path),
+        "--run",
+        str(tmp_path / "r"),
+        "--vocab",
+        str(small_vocab),
+        "--max-positions",
+        "64",
+        "--sequence-length",
+        "128",
+    )
+
+    assert code == 1
+    assert err.strip() == "error: --sequence-length can't be longer than --max-positions."
+
+
+def test_evaluate_needs_the_same_vocabulary(tmp_path, prepared, tiny_model):
+    path, _ = prepared
+
+    code, _, err = run("evaluate", str(tiny_model), "--valid", str(path))
+
+    assert code == 1
+    assert "was prepared with a different vocabulary" in err
+
+
+def test_evaluate_a_broken_model(tmp_path, prepared, tiny_model):
+    from safetensors.torch import load_file, save_file
+
+    weights = tiny_model / "model.safetensors"
+    state = load_file(weights)
+    del state["bias"]
+    save_file(state, weights)
+
+    code, _, err = run("evaluate", str(tiny_model), "--valid", str(prepared[0]))
+
+    assert code == 1
+    assert "is missing weights: bias" in err
+
+
+def test_prepare_data_needs_a_file(tmp_path):
+    code, _, err = run("prepare-data", str(tmp_path / "missing.txt"), "--out", str(tmp_path / "x.bin"))
+
+    assert code == 1
+    assert err.strip() == f"error: No such file: {tmp_path / 'missing.txt'}"

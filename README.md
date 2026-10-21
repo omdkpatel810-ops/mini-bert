@@ -1,13 +1,13 @@
 # Mini BERT
 
 [![tests](https://github.com/omdkpatel810-ops/mini-bert/actions/workflows/tests.yml/badge.svg)](https://github.com/omdkpatel810-ops/mini-bert/actions/workflows/tests.yml)
-![coverage 100%](https://img.shields.io/badge/coverage-100%25-brightgreen)
+![coverage 99.8%](https://img.shields.io/badge/coverage-99.8%25-brightgreen)
 ![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue)
 [![MIT license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 BERT, the language model behind Google Search's 2019 upgrade, built from scratch to learn how it works inside. Each part gets checked against Google's own code and weights.
 
-> **Status: milestone 2 of 5 is done.** The tokenizer and the Transformer model are complete, and Google's pre-trained BERT runs on them. Training our own comes next ([roadmap](#roadmap)).
+> **Status: milestone 3 of 5 is under way.** The tokenizer and the Transformer model are complete, and Google's pre-trained BERT runs on them. The training code is done and tested; a small BERT is now training from scratch on a free Colab GPU ([roadmap](#roadmap)).
 
 ```text
 $ minibert fill "Paris is the [MASK] of France."
@@ -22,7 +22,7 @@ $ minibert fill "Paris is the [MASK] of France."
 - **Exactly Google's tokenizer.** It matches Google's original code on all 511,834 tokens of WikiText-103's test and validation text, and on over 10,000 random Unicode strings in every test run. It is 2.5x faster than Google's Python.
 - **Found three ways Hugging Face's Rust tokenizer differs from Google's code,** including a typo in one of its Chinese-character ranges ([details](#where-hugging-face-differs-from-google)).
 - **Trained our own 30,522-token vocabulary** on 105 million words of Wikipedia in 2 min 40 s. It splits held-out text into 1.081 tokens per word, the same as Hugging Face's trainer and fewer than Google's vocabulary (1.094).
-- 116 tests with 100% line coverage, many property-based (Hypothesis), on Python 3.10 and 3.13.
+- 154 tests with 99.8% line coverage (all but two GPU-only lines), many property-based (Hypothesis), on Python 3.10 and 3.13.
 
 ## Quick start
 
@@ -189,14 +189,34 @@ Each square shows one head: row = a word, column = the word it looks at. Clear p
 
 No single head resolved *it* in harder pairs like "The trophy didn't fit in the suitcase because it was too big / small". That fits the research finding that BERT spreads such reasoning across many heads. `scripts/plot_attention.py` draws the figure.
 
+## Part 3: pre-training from scratch
+
+A BERT the shape of Google's BERT-Mini (4 layers, 256 wide, 4 heads, 11.2 million parameters) learns English from nothing by guessing hidden words in WikiText-103. That's 111.6 million tokens of Wikipedia articles.
+
+- **Masking.** Each time a stretch of text is used, 15% of its words are chosen afresh (dynamic masking, from RoBERTa). Of those, 80% become `[MASK]`, 10% a random word and 10% stay as they are, so the model can't learn to only think hard at `[MASK]`. There's no next-sentence task; RoBERTa showed it doesn't help.
+- **Only the hidden words are scored.** Scoring all 30,522 words at every position would be about 7x the work for the same loss.
+- **Schedule.** 60,000 steps of 128 × 128 tokens, about 1 billion tokens or 9 passes over the text. AdamW with BERT's warm-up then linear decay, half precision and PyTorch's fused attention on the GPU.
+- **Built for a free GPU that can disconnect.** A checkpoint goes to Google Drive every 2,000 steps, and running again resumes. Each step's data and dropout come from a seed made from the step number, so a resumed run ends with exactly the weights an uninterrupted one would. A test interrupts training five times and checks just that.
+- **Scored against Google.** The test text is never trained on, and the hidden words are chosen with a fixed seed so every model faces the same puzzles. Google's BERT-Mini, the same size but trained on 3.3 billion words for far longer, guesses 51.5% of hidden words right on WikiText-103's validation text. BERT-Base guesses 62.5%.
+
+```bash
+python scripts/get_wikitext.py
+minibert prepare-data data/wikitext-103/train.txt --out data/tokens/train.bin --wikitext   # 62 s on 2 cores
+minibert prepare-data data/wikitext-103/valid.txt --out data/tokens/valid.bin --wikitext
+minibert pretrain --train data/tokens/train.bin --valid data/tokens/valid.bin --run runs/mini
+minibert evaluate runs/mini/model --valid data/tokens/valid.bin
+```
+
+On a free Colab GPU, [`notebooks/pretrain_colab.ipynb`](notebooks/pretrain_colab.ipynb) does all of this, keeping everything in Google Drive.
+
 ## Tests
 
 ```bash
-python -m pytest --cov     # 116 tests, 100% coverage; fails under 95%
+python -m pytest --cov     # 154 tests, 99.8% coverage; fails under 95%
 ruff check . && ruff format --check .
 ```
 
-GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including the BERT-Tiny download.
+GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including the BERT-Tiny download. Training is tested on CPU with a tiny model: it must go from chance to most hidden words right on a learnable pattern, and an interrupted run must end exactly where an uninterrupted one does.
 
 ## Roadmap
 

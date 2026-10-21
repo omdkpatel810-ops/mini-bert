@@ -1,4 +1,4 @@
-"""Command line: minibert tokenize | train-tokenizer | fill."""
+"""Command line: minibert tokenize | train-tokenizer | fill | prepare-data | pretrain | evaluate."""
 
 from __future__ import annotations
 
@@ -43,6 +43,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="a Hugging Face BERT name, or a folder saved by this project (default: bert-base-uncased)",
     )
     fill.add_argument("--top", type=int, default=5, help="how many guesses to show (default: 5)")
+
+    prepare = commands.add_parser("prepare-data", help="tokenize a text file for pre-training")
+    prepare.add_argument("file", type=Path, help="UTF-8 text, one paragraph per line")
+    prepare.add_argument("--out", type=Path, required=True, help="where to write the token ids (.bin)")
+    prepare.add_argument("--wikitext", action="store_true", help="undo WikiText's formatting; [SEP] between articles")
+    prepare.add_argument("--vocab", type=Path, help="vocab.txt to use (default: Google's bert-base-uncased)")
+    prepare.add_argument("--workers", type=int, default=0, help="processes for tokenizing (default: one per core)")
+
+    pretrain = commands.add_parser("pretrain", help="train a BERT from scratch by guessing hidden words")
+    pretrain.add_argument("--train", type=Path, required=True, help="training tokens from prepare-data")
+    pretrain.add_argument("--valid", type=Path, required=True, help="held-out tokens from prepare-data")
+    pretrain.add_argument("--run", type=Path, required=True, help="folder for checkpoints, the log and the model")
+    pretrain.add_argument("--vocab", type=Path, help="the vocab.txt the data was prepared with (default: Google's)")
+    pretrain.add_argument("--layers", type=int, default=4)
+    pretrain.add_argument("--hidden", type=int, default=256)
+    pretrain.add_argument("--heads", type=int, default=4)
+    pretrain.add_argument("--max-positions", type=int, default=128)
+    pretrain.add_argument("--steps", type=int, default=60_000)
+    pretrain.add_argument("--batch-size", type=int, default=128)
+    pretrain.add_argument("--sequence-length", type=int, default=128)
+    pretrain.add_argument("--learning-rate", type=float, default=5e-4)
+    pretrain.add_argument("--warmup", type=int, default=3_000, help="warm-up steps")
+    pretrain.add_argument("--eval-every", type=int, default=1_000)
+    pretrain.add_argument("--save-every", type=int, default=1_000)
+    pretrain.add_argument("--max-minutes", type=float, help="stop (with a checkpoint) after this long")
+    pretrain.add_argument("--device", help="cuda, cpu or mps (default: cuda if there's a GPU)")
+
+    evaluate = commands.add_parser("evaluate", help="how well a model guesses hidden words in held-out text")
+    evaluate.add_argument("model", help="a folder saved by this project, or a Hugging Face BERT name")
+    evaluate.add_argument("--valid", type=Path, required=True, help="held-out tokens from prepare-data")
+    evaluate.add_argument("--sequences", type=int, default=512, help="how many 128-token windows to use")
     return parser
 
 
@@ -55,6 +86,12 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None, err: Text
             return _tokenize(args, out)
         if args.command == "fill":
             return _fill(args, out)
+        if args.command == "prepare-data":
+            return _prepare(args, out)
+        if args.command == "pretrain":
+            return _pretrain(args, out)
+        if args.command == "evaluate":
+            return _evaluate(args, out)
         return _train(args, out)
     except (OSError, ValueError) as exc:
         print(f"error: {exc}", file=err)
@@ -131,4 +168,94 @@ def _fill(args: argparse.Namespace, out: TextIO) -> int:
         width = max(len(guess.token) for guess in options)
         for guess in options:
             print(f"  {guess.token:<{width}}  {guess.probability:6.1%}", file=out)
+    return 0
+
+
+def _vocab(path: Path | None) -> Tokenizer:
+    return Tokenizer.load(path, special_in_text=False) if path else Tokenizer.bert_base_uncased(special_in_text=False)
+
+
+def _prepare(args: argparse.Namespace, out: TextIO) -> int:
+    from minibert.data import prepare_corpus
+
+    if not args.file.is_file():
+        raise ValueError(f"No such file: {args.file}")
+    started = time.perf_counter()
+    with args.file.open(encoding="utf-8", errors="replace") as lines:
+        counts = prepare_corpus(
+            lines, _vocab(args.vocab), args.out, wikitext=args.wikitext, workers=args.workers or available_cpus()
+        )
+    print(
+        f"Wrote {counts['tokens']:,} tokens from {counts['lines']:,} lines ({counts['documents']:,} documents) "
+        f"to {args.out} in {time.perf_counter() - started:.1f} s.",
+        file=out,
+    )
+    return 0
+
+
+def _pretrain(args: argparse.Namespace, out: TextIO) -> int:
+    import torch
+
+    from minibert.data import Corpus
+    from minibert.model import BertConfig, MaskedLanguageModel
+    from minibert.pretrain import TrainSettings, pretrain
+
+    tokenizer = _vocab(args.vocab)
+    settings = TrainSettings(
+        steps=args.steps,
+        batch_size=args.batch_size,
+        sequence_length=args.sequence_length,
+        learning_rate=args.learning_rate,
+        warmup_steps=args.warmup,
+        eval_every=args.eval_every,
+        save_every=args.save_every,
+    )
+    config = BertConfig(
+        vocab_size=len(tokenizer),
+        hidden_size=args.hidden,
+        layers=args.layers,
+        heads=args.heads,
+        intermediate_size=4 * args.hidden,
+        max_positions=args.max_positions,
+    )
+    if settings.sequence_length > config.max_positions:
+        raise ValueError("--sequence-length can't be longer than --max-positions.")
+    torch.manual_seed(settings.seed)
+    model = MaskedLanguageModel(config)
+    result = pretrain(
+        model,
+        tokenizer,
+        Corpus.open(args.train),
+        Corpus.open(args.valid),
+        args.run,
+        settings,
+        device=args.device,
+        max_minutes=args.max_minutes,
+        report=lambda line: print(line, file=out, flush=True),
+    )
+    print(
+        f"Held-out text: guesses {result['accuracy']:.1%} of hidden words right (loss {result['loss']:.3f}).", file=out
+    )
+    return 0
+
+
+def _evaluate(args: argparse.Namespace, out: TextIO) -> int:
+    from minibert.checkpoint import CheckpointError, load
+    from minibert.data import Corpus
+    from minibert.pretrain import evaluate, evaluation_set
+
+    try:
+        model, tokenizer = load(args.model)
+    except CheckpointError as exc:
+        raise ValueError(str(exc)) from exc
+    corpus = Corpus.open(args.valid)
+    if corpus.vocab_size != len(tokenizer):
+        raise ValueError(f"{args.valid} was prepared with a different vocabulary than {args.model} uses.")
+    inputs, labels = evaluation_set(corpus, tokenizer, args.sequences, min(128, model.config.max_positions))
+    scores = evaluate(model, inputs, labels)
+    print(
+        f"{args.model}: guesses {scores['accuracy']:.1%} of {scores['words']:,} hidden words right "
+        f"(loss {scores['loss']:.3f}, perplexity {scores['perplexity']:,.1f}).",
+        file=out,
+    )
     return 0
