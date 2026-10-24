@@ -7,7 +7,7 @@
 
 BERT, the language model behind Google Search's 2019 upgrade, built from scratch to learn how it works inside. Each part gets checked against Google's own code and weights.
 
-> **Status: complete.** Every part is built and checked against Google: the tokenizer, the model, pre-training from scratch on a free GPU, and fine-tuning ([roadmap](#roadmap)).
+> **Status: complete.** Every part is built and checked against Google: the tokenizer, the model, pre-training from scratch on a free GPU, and fine-tuning. Both Colab notebooks run as-is, so you can train your own ([roadmap](#roadmap)).
 
 ```text
 $ minibert fill "Paris is the [MASK] of France."
@@ -287,7 +287,7 @@ GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including t
 - [x] **2. Model:** the Transformer encoder in PyTorch; Google's BERT weights load and match Hugging Face
 - [x] **3. Pre-training:** a small BERT trained from scratch in 80 minutes on a free GPU matches Google's BERT-Mini on WikiText-103
 - [x] **4. Fine-tuning:** on movie-review sentiment (SST-2), ours gets 85.5% to Google's BERT-Mini's 86.5%
-- [ ] **5. Ship it**
+- [x] **5. Ship it:** public, with Colab notebooks anyone can run to train their own
 
 ## Credits
 
