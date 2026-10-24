@@ -7,7 +7,7 @@
 
 BERT, the language model behind Google Search's 2019 upgrade, built from scratch to learn how it works inside. Each part gets checked against Google's own code and weights.
 
-> **Status: milestone 4 of 5 is under way.** The tokenizer and the model are complete, and Google's pre-trained BERT runs on them. A small BERT trained from scratch on a free GPU matches Google's BERT-Mini on Wikipedia text. Fine-tuning code is done; its results are next ([roadmap](#roadmap)).
+> **Status: complete.** Every part is built and checked against Google: the tokenizer, the model, pre-training from scratch on a free GPU, and fine-tuning ([roadmap](#roadmap)).
 
 ```text
 $ minibert fill "Paris is the [MASK] of France."
@@ -22,6 +22,7 @@ $ minibert fill "Paris is the [MASK] of France."
 - **Exactly Google's tokenizer.** It matches Google's original code on all 511,834 tokens of WikiText-103's test and validation text, and on over 10,000 random Unicode strings in every test run. It is 2.5x faster than Google's Python.
 - **Found three ways Hugging Face's Rust tokenizer differs from Google's code,** including a typo in one of its Chinese-character ranges ([details](#where-hugging-face-differs-from-google)).
 - **Pre-trained from scratch in 80 minutes on a free Colab GPU,** a BERT the size of Google's BERT-Mini guesses **52.1%** of hidden words right in WikiText-103's test text. Google's BERT-Mini gets 51.4%, after training on 30 times more text ([results](#results)).
+- **Fine-tuned for movie-review sentiment,** it gets **85.5%** of SST-2's validation sentences right, within a point of Google's BERT-Mini (86.5%) with the same recipe, 18 runs in all ([results](#results-1)).
 - **Trained our own 30,522-token vocabulary** on 105 million words of Wikipedia in 2 min 40 s. It splits held-out text into 1.081 tokens per word, the same as Hugging Face's trainer and fewer than Google's vocabulary (1.094).
 - 185 tests with 99.5% line coverage (all but a few GPU-only lines), many property-based (Hypothesis), on Python 3.10 and 3.13.
 
@@ -252,7 +253,24 @@ minibert classify --model runs/sentiment-ours "not bad at all." "a mess from sta
 
 Any task that sorts sentences into classes works the same way: give `--train` and `--valid` as `.tsv` files with `sentence` and `label` columns, and the class names with `--labels`.
 
-On a free Colab GPU, [`notebooks/finetune_colab.ipynb`](notebooks/finetune_colab.ipynb) runs all 18 fine-tuning runs for both models, resuming after a disconnect, and draws the comparison. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/omdkpatel810-ops/mini-bert/blob/main/notebooks/finetune_colab.ipynb) Results will be added here when it has run.
+On a free Colab GPU, [`notebooks/finetune_colab.ipynb`](notebooks/finetune_colab.ipynb) runs all 18 fine-tuning runs for both models, resuming after a disconnect, and draws the comparison. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/omdkpatel810-ops/mini-bert/blob/main/notebooks/finetune_colab.ipynb)
+
+### Results
+
+Each model was fine-tuned 9 times: three learning rates, three seeds each, scored on SST-2's 872 validation sentences after the last epoch. Sixteen runs took about 2.5 minutes each on a free Colab T4. Colab disconnected before Google's last two (learning rate 5e-5, seeds 2 and 3), so those ran on CPU with the same code and recipe.
+
+| Model | Pre-trained on | Best learning rate | Sentences right (mean ± spread over 3 seeds) |
+| --- | --- | ---: | ---: |
+| **Ours** | WikiText-103, 80 minutes on one free GPU | 5e-5 | **85.5% ± 0.2** |
+| Google BERT-Mini | BooksCorpus + Wikipedia (3.3 B words) | 1e-4 | 86.5% ± 1.1 |
+| Google BERT-Mini, as Google reports it | | best of Google's own grid | 85.9% on the test set |
+
+![SST-2 accuracy for both models at three learning rates: ours 80.5%, 85.1% and 85.5%; Google's BERT-Mini 82.1%, 86.5% and 86.4%](docs/finetuning.png)
+
+- **Within a point of Google.** Pre-trained on 30 times less text in 80 minutes on a free GPU, ours gets 85.5% of movie-review sentences right to Google's 86.5%: about 9 sentences out of 872. Neither model saw movie reviews before fine-tuning.
+- **Steadier from seed to seed.** At its best learning rate, ours ranged from 85.3% to 85.7%. Google's ranged from 85.8% to 87.7%.
+- **Both want a gentle learning rate.** At 3e-4, both lose 4 to 5 points; 1e-4 and 5e-5 are close for both.
+- **Every run is recorded** in [`results/finetuning.json`](results/finetuning.json), with its seed, loss and hardware; `scripts/plot_finetuning.py` draws the chart.
 
 ## Tests
 
@@ -268,7 +286,7 @@ GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including t
 - [x] **1. Tokenizer:** Google's WordPiece tokenizer, exactly, and a vocabulary trainer
 - [x] **2. Model:** the Transformer encoder in PyTorch; Google's BERT weights load and match Hugging Face
 - [x] **3. Pre-training:** a small BERT trained from scratch in 80 minutes on a free GPU matches Google's BERT-Mini on WikiText-103
-- [ ] **4. Fine-tuning:** sentiment analysis, compared with Google's BERT of the same size (code done; waiting for the pre-trained model)
+- [x] **4. Fine-tuning:** on movie-review sentiment (SST-2), ours gets 85.5% to Google's BERT-Mini's 86.5%
 - [ ] **5. Ship it**
 
 ## Credits

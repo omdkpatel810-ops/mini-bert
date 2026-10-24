@@ -29,7 +29,13 @@ def main() -> None:
             axis.bar(i + offset, statistics.mean(scores), width, color=COLOURS[model], label=model if i == 0 else None)
             axis.scatter([i + offset] * len(scores), scores, color="black", s=12, zorder=3)
             axis.text(
-                i + offset, statistics.mean(scores) + 0.4, f"{statistics.mean(scores):.1f}", ha="center", fontsize=8
+                i + offset,
+                min(scores) - 1.2,
+                f"{statistics.mean(scores):.1f}%",
+                ha="center",
+                fontsize=9,
+                color="white",
+                fontweight="bold",
             )
     published = 100 * data["google_published_test"]
     axis.axhline(

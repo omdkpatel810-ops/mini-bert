@@ -1,5 +1,5 @@
 {
- "about": "SST-2 fine-tuning with notebooks/finetune_colab.ipynb, 2026-10-23/24: 4 epochs, batch 32, AdamW, 10% warm-up then linear decay, a new head from the seed, last-epoch accuracy on the 872 validation sentences. Copied from the run's finetune_results.json (losses rounded to 4 decimals).",
+ "about": "SST-2 fine-tuning with notebooks/finetune_colab.ipynb, 2026-10-23/24: 4 epochs, batch 32, AdamW, 10% warm-up then linear decay, a new head from the seed, last-epoch accuracy on the 872 validation sentences. Copied from the run's finetune_results.json (losses rounded to 4 decimals). Colab disconnected before Google BERT-Mini's last two runs (learning rate 5e-5, seeds 2 and 3); they were run on CPU with the same code and recipe.",
  "validation_sentences": 872,
  "google_published_test": 0.859,
  "runs": [
@@ -162,6 +162,26 @@
    "loss": 0.4877,
    "seconds": 146.1,
    "hardware": "Colab Tesla T4"
+  },
+  {
+   "model": "Google BERT-Mini",
+   "learning_rate": 5e-05,
+   "seed": 2,
+   "accuracy": 0.8635321100917431,
+   "correct": 753,
+   "loss": 0.4767,
+   "seconds": 3227.3,
+   "hardware": "CPU (2 cores), after Colab disconnected"
+  },
+  {
+   "model": "Google BERT-Mini",
+   "learning_rate": 5e-05,
+   "seed": 3,
+   "accuracy": 0.8681192660550459,
+   "correct": 757,
+   "loss": 0.4777,
+   "seconds": 3241.5,
+   "hardware": "CPU (2 cores), after Colab disconnected"
   }
  ]
 }
