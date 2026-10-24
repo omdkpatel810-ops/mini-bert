@@ -7,7 +7,7 @@
 
 BERT, the language model behind Google Search's 2019 upgrade, built from scratch to learn how it works inside. Each part gets checked against Google's own code and weights.
 
-> **Status: milestones 3 and 4 of 5 are under way.** The tokenizer and the Transformer model are complete, and Google's pre-trained BERT runs on them. The pre-training and fine-tuning code is done and tested; a small BERT is training from scratch on a free Colab GPU, and the results will follow ([roadmap](#roadmap)).
+> **Status: milestone 4 of 5 is under way.** The tokenizer and the model are complete, and Google's pre-trained BERT runs on them. A small BERT trained from scratch on a free GPU matches Google's BERT-Mini on Wikipedia text. Fine-tuning code is done; its results are next ([roadmap](#roadmap)).
 
 ```text
 $ minibert fill "Paris is the [MASK] of France."
@@ -21,6 +21,7 @@ $ minibert fill "Paris is the [MASK] of France."
 - **BERT's Transformer, written out by hand** in PyTorch, attention included. Google's 110-million-parameter BERT-Base loads into it. It makes the same best guess as Hugging Face's official implementation for **all 3,709 hidden words** in 256 Wikipedia sentences, and runs within 6% of its speed.
 - **Exactly Google's tokenizer.** It matches Google's original code on all 511,834 tokens of WikiText-103's test and validation text, and on over 10,000 random Unicode strings in every test run. It is 2.5x faster than Google's Python.
 - **Found three ways Hugging Face's Rust tokenizer differs from Google's code,** including a typo in one of its Chinese-character ranges ([details](#where-hugging-face-differs-from-google)).
+- **Pre-trained from scratch in 80 minutes on a free Colab GPU,** a BERT the size of Google's BERT-Mini guesses **52.1%** of hidden words right in WikiText-103's test text. Google's BERT-Mini gets 51.4%, after training on 30 times more text ([results](#results)).
 - **Trained our own 30,522-token vocabulary** on 105 million words of Wikipedia in 2 min 40 s. It splits held-out text into 1.081 tokens per word, the same as Hugging Face's trainer and fewer than Google's vocabulary (1.094).
 - 185 tests with 99.5% line coverage (all but a few GPU-only lines), many property-based (Hypothesis), on Python 3.10 and 3.13.
 
@@ -209,6 +210,31 @@ minibert evaluate runs/mini/model --valid data/tokens/valid.bin
 
 On a free Colab GPU, [`notebooks/pretrain_colab.ipynb`](notebooks/pretrain_colab.ipynb) does all of this, keeping everything in Google Drive.
 
+### Results
+
+It trained in **80 minutes on a free Colab Tesla T4**, at about 205,000 tokens a second. Then every model faced the same test: WikiText-103's test text, never trained on, with the same 18,903 hidden words.
+
+| Model | Pre-trained on | Hidden words guessed right | Loss |
+| --- | --- | ---: | ---: |
+| **Ours** (4 layers, 11.2 M parameters) | WikiText-103 (103 M words), 80 min on one free GPU | **52.1%** | 2.64 |
+| Google BERT-Mini (same size) | BooksCorpus + Wikipedia (3.3 B words) | 51.4% | 2.70 |
+| Google BERT-Base (12 layers, 110 M) | BooksCorpus + Wikipedia (3.3 B words) | 62.4% | 2.12 |
+
+![Loss and held-out accuracy over 60,000 steps: a plateau near loss 6.2 until step 7,000, then a sharp drop, ending level with Google's BERT-Mini](docs/pretraining.png)
+
+- **On its home ground, it matches Google.** Ours edges out Google's BERT-Mini on the test text and ties it on the validation text (51.5% each). It is a home game, though: ours learned from Wikipedia articles of exactly this kind, nine times over, while Google's learned from 30 times more text of more kinds. [Part 4](#part-4-fine-tuning-for-sentiment) tests both on movie reviews instead.
+- **A sudden jump.** For about 4,000 steps the loss sat near 6.2 while the model guessed common words like "the" and "," everywhere, getting about 15% right. Then, around step 7,500, it fell sharply as the model began using the words around each gap: 25% right at step 8,000, 36% at 10,000. [Chen et al. (2024)](https://arxiv.org/abs/2309.07311) saw the same kind of sudden drop in BERT, at the point where its attention heads start to track grammar.
+- **Small models copy.** On short everyday sentences, both 4-layer models often guess a word that is already in the sentence. BERT-Base, with 12 layers, mostly doesn't:
+
+| Text | Ours | Google BERT-Mini | Google BERT-Base |
+| --- | --- | --- | --- |
+| Paris is the [MASK] of France. | university 9%, city 7% | capital 21%, border 12% | capital 99.7% |
+| Winnipeg is the capital of [MASK]. | **winnipeg** 88%, manitoba 5% | **winnipeg** 64%, manitoba 25% | manitoba 87% |
+| She opened the [MASK] and took out the milk. | **milk** 35%, bus 5% | **milk** 35%, door 7% | fridge 47%, refrigerator 45% |
+| The [MASK] won the game in the final minute. | **game** 65%, team 9% | **game** 25%, team 15% | lions 7%, saints 3% |
+
+A likely reason: in a 128-token stretch of a Wikipedia article, a hidden word very often appears nearby, because names and topics repeat. Copying is a cheap strategy that is often right, and a 4-layer model leans on it hardest. The training log and scores are in [`results/pretraining.json`](results/pretraining.json); `scripts/plot_pretraining.py` draws the chart.
+
 ## Part 4: fine-tuning for sentiment
 
 Pre-training teaches general English; fine-tuning teaches one job. Here the job is [SST-2](https://huggingface.co/datasets/nyu-mll/glue): is a sentence from a movie review positive or negative? There are 67,349 training sentences and 872 for validation.
@@ -241,13 +267,13 @@ GitHub Actions runs the suite on Python 3.10 and 3.13 on every push, including t
 
 - [x] **1. Tokenizer:** Google's WordPiece tokenizer, exactly, and a vocabulary trainer
 - [x] **2. Model:** the Transformer encoder in PyTorch; Google's BERT weights load and match Hugging Face
-- [ ] **3. Pre-training:** teach a small BERT English by guessing hidden words (code done; training on Colab)
+- [x] **3. Pre-training:** a small BERT trained from scratch in 80 minutes on a free GPU matches Google's BERT-Mini on WikiText-103
 - [ ] **4. Fine-tuning:** sentiment analysis, compared with Google's BERT of the same size (code done; waiting for the pre-trained model)
 - [ ] **5. Ship it**
 
 ## Credits
 
-Google's BERT vocabulary (`minibert/data/`), original tokenizer (`tests/reference/`) and pre-trained weights are Apache-2.0, from [google-research/bert](https://github.com/google-research/bert). WikiText-103 is by Salesforce Research, CC BY-SA 3.0. The attention-head findings are from Clark, Khandelwal, Levy and Manning, [What Does BERT Look At?](https://arxiv.org/abs/1906.04341) (2019).
+Google's BERT vocabulary (`minibert/data/`), original tokenizer (`tests/reference/`) and pre-trained weights are Apache-2.0, from [google-research/bert](https://github.com/google-research/bert). WikiText-103 is by Salesforce Research, CC BY-SA 3.0. The attention-head findings are from Clark, Khandelwal, Levy and Manning, [What Does BERT Look At?](https://arxiv.org/abs/1906.04341) (2019); the sudden drop in the loss is described by Chen, Shwartz-Ziv, Cho, Leavitt and Saphra, [Sudden Drops in the Loss](https://arxiv.org/abs/2309.07311) (ICLR 2024). SST-2 is from the [GLUE benchmark](https://gluebenchmark.com/).
 
 ## License
 
