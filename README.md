@@ -208,7 +208,7 @@ minibert pretrain --train data/tokens/train.bin --valid data/tokens/valid.bin --
 minibert evaluate runs/mini/model --valid data/tokens/valid.bin
 ```
 
-On a free Colab GPU, [`notebooks/pretrain_colab.ipynb`](notebooks/pretrain_colab.ipynb) does all of this, keeping everything in Google Drive.
+On a free Colab GPU, [`notebooks/pretrain_colab.ipynb`](notebooks/pretrain_colab.ipynb) does all of this, keeping everything in Google Drive. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/omdkpatel810-ops/mini-bert/blob/main/notebooks/pretrain_colab.ipynb)
 
 ### Results
 
@@ -252,7 +252,7 @@ minibert classify --model runs/sentiment-ours "not bad at all." "a mess from sta
 
 Any task that sorts sentences into classes works the same way: give `--train` and `--valid` as `.tsv` files with `sentence` and `label` columns, and the class names with `--labels`.
 
-On a free Colab GPU, [`notebooks/finetune_colab.ipynb`](notebooks/finetune_colab.ipynb) runs all 18 fine-tuning runs for both models, resuming after a disconnect, and draws the comparison. Results will be added here when it has run.
+On a free Colab GPU, [`notebooks/finetune_colab.ipynb`](notebooks/finetune_colab.ipynb) runs all 18 fine-tuning runs for both models, resuming after a disconnect, and draws the comparison. [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/omdkpatel810-ops/mini-bert/blob/main/notebooks/finetune_colab.ipynb) Results will be added here when it has run.
 
 ## Tests
 
